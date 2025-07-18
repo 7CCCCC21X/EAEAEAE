@@ -2,13 +2,16 @@
 <title>Nimbus 多协议余额查询</title>
 <style>
 body{font-family:-apple-system,Segoe UI,PingFang SC,Helvetica,Arial,sans-serif;padding:24px;max-width:880px;margin:auto}
-h2{margin:0 0 12px;font-size:1.3rem}
 textarea{width:100%;height:100px;font-family:monospace}
 button{padding:8px 18px;margin:12px 0}
+h2{margin:0 0 12px;font-size:1.3rem}
 table{width:100%;border-collapse:collapse;font-size:.9rem;margin-top:10px}
 th,td{border:1px solid #d0d0d0;padding:6px;text-align:center}
+.addr-row{cursor:pointer;background:#f6faff}
+.addr-row:hover{background:#eef6ff}
 .ok{color:#16a34a;font-weight:600}.err{color:#dc2626;font-weight:600}
 tfoot td{font-weight:700}
+.hidden{display:none}
 </style>
 
 <h2>Nimbus 多协议余额查询</h2>
@@ -17,82 +20,89 @@ tfoot td{font-weight:700}
 <p id="log">等待输入…</p>
 
 <table>
-  <thead><tr><th>#</th><th>地址</th><th>协议</th><th>现值 USD</th><th>状态</th></tr></thead>
+  <thead><tr><th>#</th><th>地址</th><th>地址总余额 USD</th><th>状态</th></tr></thead>
   <tbody id="tbody"></tbody>
-  <tfoot><tr><td colspan="3">总和</td><td id="sum">$0</td><td></td></tr></tfoot>
+  <tfoot><tr><td colspan="2">全部地址总和</td><td id="sum">$0</td><td></td></tr></tfoot>
 </table>
 
 <script>
-/* --------- 可按需增删的协议列表 --------- */
+/* 可按需增删的协议列表 */
 const PROTOCOLS = [
-  "Astrol",
-  "SolarDex",
-  "Sandglass",
-  "Umbra",
-  "PortalFinance",
-  "ECLIPSE-Save",
-  "ECLIPSE-Invariant",
-  "ECLIPSE-Orca"
+  "Astrol","SolarDex","Sandglass","Umbra",
+  "PortalFinance","ECLIPSE-Save","ECLIPSE-Invariant","ECLIPSE-Orca"
 ];
+const API      = "https://api.getnimbus.io/v2/address/";
+const SLEEP    = 600;                                // ms
+const REG_B58  = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;    // Eclipse/Solana base58
+const CACHE    = new Map();                          // addr → [{proto,val},…]
 
-const API     = "https://api.getnimbus.io/v2/address/";
-const SLEEP   = 600;                                // ms，防 429
-const REG_B58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;    // Eclipse/Solana base58
-
-async function fetchJSON(u){
-  const r = await fetch(u);
-  if(!r.ok) throw new Error(r.statusText || r.status);
+/* 基础 GET */
+async function j(url){
+  const r = await fetch(url);
+  if(!r.ok) throw new Error(r.statusText||r.status);
   return r.json();
 }
-
-/* 拉某地址+协议的当前 USD 价值 */
-async function getValue(addr, proto){
+/* 查 addr+protocol 的 USD 价值 */
+async function getVal(addr, proto){
   const url = `${API}${addr}/positions?chain=Eclipse&protocol=${encodeURIComponent(proto)}`;
-  const {data=[]} = await fetchJSON(url);
+  const {data=[]} = await j(url);
   return data.reduce((s,p)=>
-    s + (p.current?.tokens ?? []).reduce((t,v)=>t + Number(v.value || 0), 0)
+    s + (p.current?.tokens??[]).reduce((acc,t)=>acc+Number(t.value||0),0)
   ,0);
 }
 
 document.getElementById('run').onclick = async ()=>{
-  const raw   = document.getElementById('addr').value.split(/\s+/).map(t=>t.trim());
-  const addrs = [...new Set(raw.filter(a=>REG_B58.test(a)))];
-  if(!addrs.length) return alert("请至少输入一个有效的 Eclipse/Solana 地址");
+  const raw  = document.getElementById('addr').value.split(/\s+/).map(t=>t.trim());
+  const list = [...new Set(raw.filter(a=>REG_B58.test(a)))];
+  if(!list.length) return alert("请至少输入一个有效地址!");
 
-  const tbody = document.getElementById('tbody'); tbody.innerHTML="";
-  const log   = document.getElementById('log');
-  let grand   = 0, row = 0;
+  const tbody=document.getElementById('tbody'); tbody.innerHTML='';
+  const log  = document.getElementById('log');
+  let grand=0,row=0;
 
-  for(const a of addrs){
-    let addrSum = 0;
+  for(const addr of list){
+    let addrTotal=0, protoArr=[];
     for(const p of PROTOCOLS){
-      row++;
-      const tr = document.createElement('tr'); tbody.appendChild(tr);
-      tr.innerHTML = `<td>${row}</td><td>${a}</td><td>${p}</td><td>加载中…</td><td></td>`;
       try{
-        const val = await getValue(a, p);
-        if(val > 0){
-          addrSum += val; grand += val;
-          tr.cells[3].textContent = `$${val.toLocaleString()}`;
-          tr.cells[4].innerHTML   = '<span class="ok">✅</span>';
-        }else{
-          tr.cells[3].textContent = '$0';
-          tr.cells[4].textContent = '-';
-        }
-      }catch(e){
-        tr.cells[3].textContent = '-';
-        tr.cells[4].innerHTML   = '<span class="err">❌</span>';
-      }
-      if(row < addrs.length * PROTOCOLS.length) await new Promise(r=>setTimeout(r,SLEEP));
+        const v = await getVal(addr,p);
+        if(v>0) protoArr.push({p,v});
+        addrTotal += v;
+      }catch{}
+      await new Promise(r=>setTimeout(r,SLEEP));
     }
-    /* 每个地址的小计行 */
-    const sumTR = document.createElement('tr');
-    sumTR.innerHTML =
-      `<td></td><td colspan="2" style="text-align:right;font-weight:700">地址小计</td>` +
-      `<td style="font-weight:700">$${addrSum.toLocaleString()}</td><td></td>`;
-    tbody.appendChild(sumTR);
+    CACHE.set(addr, protoArr);      // 缓存
+    row++;
+    const tr=document.createElement('tr');
+    tr.className='addr-row';
+    tr.innerHTML=
+      `<td>${row}</td><td>${addr}</td>`+
+      `<td>$${addrTotal.toLocaleString()}</td>`+
+      `<td class="${addrTotal>0?'ok':'err'}">${addrTotal>0?'点击展开':'-'}</td>`;
+    tbody.appendChild(tr);
+
+    /* 点击展开 / 折叠 */
+    tr.onclick=()=>{
+      const exists=document.querySelectorAll(`.child-${row}`);
+      if(exists.length){            // 已经展开 → 折叠
+        exists.forEach(e=>e.remove());
+        tr.cells[3].textContent='点击展开';
+      }else{                        // 展开
+        const data=CACHE.get(addr);
+        data.forEach(({p,v})=>{
+          const sub=document.createElement('tr');
+          sub.className=`child-${row}`;
+          sub.innerHTML=
+            `<td></td><td style="padding-left:2em">${p}</td>`+
+            `<td>$${v.toLocaleString()}</td><td></td>`;
+          tr.after(sub);            // 插在地址行之后
+        });
+        tr.cells[3].textContent='点击折叠';
+      }
+    };
+
+    grand+=addrTotal;
   }
   document.getElementById('sum').textContent = `$${grand.toLocaleString()}`;
-  log.textContent = '完成 ✅';
+  log.textContent='完成 ✅';
 };
 </script>
